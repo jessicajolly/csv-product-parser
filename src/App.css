@@ -20,6 +20,6 @@ button {
 	justify-content: space-around;
 }
 
-.content < div {
+.content > div {
 	width: 50%;
 }
