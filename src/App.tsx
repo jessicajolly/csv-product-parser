@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useState } from 'react';
 import './App.css';
 import Papa from 'papaparse';
@@ -8,10 +9,33 @@ function App() {
   const [updateFile, setUpdateFile] = useState<File | null>(null);
   const [data, setData] = useState<Record<string, CSVRow>>({});
   const [mergedSkusCount, setMergedSkusCount] = useState(0);
+  const [duplicateSkusCount, setDuplicateSkusCount] = useState(0);
   const [updatedSkus, setUpdatedSkus] = useState(new Set());
   const [uploadedFileName, setUploadedFileName] = useState('');
+  const priceRef = React.createRef<HTMLInputElement>();
+  const [priceMargin, setPriceMargin] = useState('');
   
-  const normalize = (str: string) => str?.toString().replace(/\(.*?\)/g, '').trim().toLowerCase();
+  const normalize = (str: string) => {
+	  return str
+		?.toString()
+		.replace(/\u00A0/g, ' ')       // replace non-breaking spaces
+		.replace(/\u200B/g, '')        // remove zero-width spaces
+		.replace(/\(.*?\)/g, '')       // remove parentheses notes
+		.trim()
+		.toLowerCase();
+	};
+  const calculateSalePrice = (supplierPrice: number) => {
+	  if (supplierPrice > 209.99) return supplierPrice + 80;
+	  if (supplierPrice > 145.99) return supplierPrice + 55;
+	  if (supplierPrice > 90.99) return supplierPrice + 45;
+	  if (supplierPrice > 39.99) return supplierPrice + 35;
+	  if (supplierPrice > 29.99) return supplierPrice + 25;
+	  if (supplierPrice > 26.99) return supplierPrice + 21;
+	  if (supplierPrice > 12.99) return supplierPrice + 18;
+	  if (supplierPrice > 4.99) return supplierPrice + 17;
+	
+	  return supplierPrice + 15;
+	};
 
   // --- Step 1: Upload base CSV ---
   const handleBaseFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -28,6 +52,7 @@ function App() {
       complete: function(results: Papa.ParseResult<CSVRow>) {
         const formatted: Record<string, CSVRow> = {};
         let duplicateCount = 0;
+        const duplicateSkus = new Set();
 
         results.data.forEach((row: CSVRow) => {
           const skuKey = normalize(row['oem_sku']);
@@ -38,6 +63,7 @@ function App() {
             formatted[skuKey]['stock_quantity'] =
               Number(formatted[skuKey]['stock_quantity'] || 0) + stockValue;
               duplicateCount += 1; // increment duplicate counter
+        	  duplicateSkus.add(skuKey);
           } else {
             // first occurence
             formatted[skuKey] = { ...row };
@@ -47,7 +73,8 @@ function App() {
         setData(formatted);
         setUploadedFileName('Products uploaded'); 
         setUpdatedSkus(new Set()); 
-        setMergedSkusCount(duplicateCount); // <-- store number of duplicates merged
+        setMergedSkusCount(duplicateCount); // number of duplicates merged
+        setDuplicateSkusCount(duplicateSkus.size);
       }
     });
   };
@@ -78,20 +105,30 @@ function App() {
             const stockValue = Number(row['stock_quantity'] || 0);
 
             if (updated[skuKey] && stockValue > 0) {
-              // ADD stock to existing amount
-              updated[skuKey]['stock_quantity'] =
-                Number(updated[skuKey]['stock_quantity'] || 0) + stockValue;
-
-              // Update price if defined and item in stock
-              if (row['price'] && stockValue > 0) {
-                updated[skuKey]['price'] = row['price'];
-              }
+              const existingRow = { ...updated[skuKey] }; // clone row
+              
+              existingRow['stock_quantity'] =
+				Number(existingRow['stock_quantity'] || 0) + stockValue;
+			
+			  if (row['price']) {
+				  const supplierPrice = Number(row['price']);
+				  existingRow['price'] = calculateSalePrice(supplierPrice);
+			  }
+			
+			  if (Number(priceMargin) > 0) {
+				existingRow['price'] =
+				  Number(existingRow['price'] || 0) + Number(priceMargin);
+			  }
+			
+			  updated[skuKey] = existingRow;
 
               changed.add(skuKey); // highlight updated rows
             }
           });
 
           setUpdatedSkus(changed);
+          setPriceMargin('');
+          
           return updated;
         });
       }
@@ -127,22 +164,27 @@ function App() {
 			  <h2>Step 1: Upload base CSV</h2>
 			  <input type="file" onChange={handleBaseFile} />
 			  <button onClick={importBaseCSV}>Upload Base CSV</button>
-			  {uploadedFileName && <p>{uploadedFileName}</p>}
+			  {uploadedFileName && <p>Products uploaded</p>}
 			  {mergedSkusCount > 0 && (
 				  <p>{mergedSkusCount} duplicate SKUs were condensed into single rows</p>
+			  )}
+			  {duplicateSkusCount > 0 && (
+			  
+				  <p>{duplicateSkusCount} SKUs had duplicates</p>
 			  )}
 			
 			  <h2>Step 2: Upload update CSV</h2>
 			  <input type="file" onChange={handleUpdateFile} disabled={!uploadedFileName}  />
-			  <button onClick={importUpdateCSV} disabled={!uploadedFileName} >Upload Update CSV</button>
+			  <button onClick={importUpdateCSV} disabled={!uploadedFileName} >Upload Update CSV</button><br/>
+  			  <p>Increase margin amount: (optional)</p>
+  			  <input id="increase-margin" ref={priceRef} type="text" value={priceMargin} onChange={e => setPriceMargin(e.target.value)} />
 	
 			  {updatedSkus.size > 0 && (
-				<p>{updatedSkus.size} products updated</p>
-			  )}
-	  
+				<p>{updatedSkus.size} products updated from {uploadedFileName}</p>
+			  )}	  			
 	
-				<h2>Step 3: Export merged CSV</h2>
-				<button onClick={exportCSV}>Export Full CSV</button>
+			  <h2>Step 3: Export merged CSV</h2>
+			  <button onClick={exportCSV}>Export Full CSV</button>
 		  </div>
 		  
 		  <div>
