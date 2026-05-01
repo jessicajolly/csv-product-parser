@@ -10,6 +10,9 @@ function App() {
   const [data, setData] = useState<Record<string, CSVRow>>({});
   const [mergedSkusCount, setMergedSkusCount] = useState(0);
   const [duplicateSkusCount, setDuplicateSkusCount] = useState(0);
+  const [inactiveSkusCount, setInactiveSkusCount] = useState(0);
+  const [originalCount, setOriginalCount] = useState(0);
+  const [filteredCount, setFilteredCount] = useState(0);
   const [updatedSkus, setUpdatedSkus] = useState(new Set());
   const [uploadedFileName, setUploadedFileName] = useState('');
   const priceRef = React.createRef<HTMLInputElement>();
@@ -50,32 +53,58 @@ function App() {
       header: true,
       skipEmptyLines: true,
       complete: function(results: Papa.ParseResult<CSVRow>) {
-        const formatted: Record<string, CSVRow> = {};
-        let duplicateCount = 0;
-        const duplicateSkus = new Set();
-
-        results.data.forEach((row: CSVRow) => {
-          const skuKey = normalize(row['oem_sku']);
-          const stockValue = Number(row['stock_quantity'] || 0);
-
-          if (formatted[skuKey]) {
-            // IF THERE IS A DUPLICATE SKU, TOTAL THE STOCK AND MERGE TO ONE LINE
-            formatted[skuKey]['stock_quantity'] =
-              Number(formatted[skuKey]['stock_quantity'] || 0) + stockValue;
-              duplicateCount += 1; // increment duplicate counter
-        	  duplicateSkus.add(skuKey);
-          } else {
-            // first occurence
-            formatted[skuKey] = { ...row };
-          }
-        });
-
-        setData(formatted);
-        setUploadedFileName('Products uploaded'); 
-        setUpdatedSkus(new Set()); 
-        setMergedSkusCount(duplicateCount); // number of duplicates merged
-        setDuplicateSkusCount(duplicateSkus.size);
-      }
+		  const formatted: Record<string, CSVRow> = {};
+		  let duplicateCount = 0;
+		  const duplicateSkus = new Set();	
+		  
+		  let inactiveCount = 0;	  
+		
+		  results.data.forEach((row: CSVRow) => {
+			const skuKey = normalize(row['oem_sku']);
+			const stockValue = Number(row['stock_quantity'] || 0);
+			const itemStatus = Number(row['status'] || 0);
+			
+			if (itemStatus === 0) {
+				inactiveCount += 1;
+				return;
+			}
+		
+			if (formatted[skuKey]) {
+			  // Merge duplicate stock
+			  formatted[skuKey]['stock_quantity'] =
+				Number(formatted[skuKey]['stock_quantity'] || 0) + stockValue;
+		
+			  duplicateCount += 1;
+			  duplicateSkus.add(skuKey);
+		
+			} else {
+			  const newRow = { ...row };
+		
+			  formatted[skuKey] = newRow;
+			}
+		  });
+		
+		  // filter ONLY zero stock items
+		  const zeroStockOnly: Record<string, CSVRow> = {};
+		
+		  Object.keys(formatted).forEach((sku) => {
+			const stock = Number(formatted[sku]['stock_quantity'] || 0);
+		
+			if (stock === 0) {
+			  zeroStockOnly[sku] = formatted[sku];
+			}
+		  });
+		
+		  setData(zeroStockOnly);
+		
+		  setUploadedFileName('Products uploaded');
+		  setUpdatedSkus(new Set());
+		  setMergedSkusCount(duplicateCount);
+		  setDuplicateSkusCount(duplicateSkus.size);
+		  setInactiveSkusCount(inactiveCount);
+		  setOriginalCount(Object.keys(formatted).length);
+		  setFilteredCount(Object.keys(zeroStockOnly).length);
+		}
     });
   };
 
@@ -111,8 +140,8 @@ function App() {
 				Number(existingRow['stock_quantity'] || 0) + stockValue;
 			
 			  if (row['price']) {
-				  const supplierPrice = Number(row['price']);
-				  existingRow['price'] = calculateSalePrice(supplierPrice);
+				  	const supplierPrice = Number(row['price']);
+				  	existingRow['price'] = calculateSalePrice(supplierPrice);
 			  }
 			
 			  if (Number(priceMargin) > 0) {
@@ -139,10 +168,13 @@ function App() {
   const previewRows = Object.values(data)
     .filter((row: CSVRow) => updatedSkus.has(normalize(row['oem_sku'])))
     .slice(0, 100);
+    
+  const totalRows = Object.values(data).filter((row: CSVRow) => Number(row['stock_quantity'] || 0) > 0);
 
   // Export full CSV
   const exportCSV = () => {
-    const csv = Papa.unparse(Object.values(data));
+    const inStockRows = Object.values(data).filter((row: CSVRow) => Number(row['stock_quantity'] || 0) > 0);
+    const csv = Papa.unparse(inStockRows);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -155,8 +187,8 @@ function App() {
   return (
     <div className="App">
       <h1>CSV Product Updater</h1>
-      <p>This parser takes the product sheet from the GWS exporter and merges multiple lines of the same SKU onto 1 line, adding together the stock. <br/>Then, once uploading a csv from another supplier, stock is added matching SKUs and, if set, the price is updated to the new amount.<br/>
-      The column headers in the update file must match the column names below: oem_sku, stock_quantity, price. This is case sensitive.</p>
+      <p>This parser takes the product sheet from the GWS exporter and merges multiple lines of the same SKU onto 1 line, adding together the stock and exporting items that are ZERO stock. Then, once uploading a csv from another supplier, stock is added matching SKUs and, if set, the price is updated to the new amount.</p>
+      <p>The column headers in the update file must match the column names below: <b>oem_sku, stock_quantity, price</b>. </p>
       <p>SKU sanitization. Currently, anything in parenthesis () added to the end of the SKU by the new supplier will be removed by the parser. So an SKU of <b>1234579(bro-man)</b> with have the (bro-man) removed, leaving <b>1234579</b> as the matching sku. Any other formatting or name changing by the supplier needs to be sanitized out before uploading.</p>
       <p>You can repeat step 2 as many times as you like. Once all new csvs have been uploading, you download the final CSV in step 3.</p>
       <div className="content">
@@ -165,25 +197,32 @@ function App() {
 			  <input type="file" onChange={handleBaseFile} />
 			  <button onClick={importBaseCSV}>Upload Base CSV</button>
 			  {uploadedFileName && <p>Products uploaded</p>}
-			  {mergedSkusCount > 0 && (
-				  <p>{mergedSkusCount} duplicate SKUs were condensed into single rows</p>
+			  {inactiveSkusCount > 0 && (	  
+				  <p>{inactiveSkusCount} inactive SKUs removed</p>
 			  )}
-			  {duplicateSkusCount > 0 && (
-			  
-				  <p>{duplicateSkusCount} SKUs had duplicates</p>
+			  {duplicateSkusCount > 0 && (	  
+				  <p>{mergedSkusCount} items were duplicates, these were merged into {duplicateSkusCount} unique items</p>
 			  )}
+			  {filteredCount > 0 && (	  
+				  <p>{originalCount - filteredCount} in-stock items removed.<br/><br/>
+				     <b>{filteredCount} out of stock items on update sheet.</b></p>
+			 )}
 			
 			  <h2>Step 2: Upload update CSV</h2>
 			  <input type="file" onChange={handleUpdateFile} disabled={!uploadedFileName}  />
-			  <button onClick={importUpdateCSV} disabled={!uploadedFileName} >Upload Update CSV</button><br/>
   			  <p>Increase margin amount: (optional)</p>
-  			  <input id="increase-margin" ref={priceRef} type="text" value={priceMargin} onChange={e => setPriceMargin(e.target.value)} />
+  			  <input id="increase-margin" ref={priceRef} type="text" value={priceMargin} onChange={e => setPriceMargin(e.target.value)} /><br/><br/>
+  			  
+			  <button onClick={importUpdateCSV} disabled={!uploadedFileName} >Upload Update CSV</button><br/>
 	
 			  {updatedSkus.size > 0 && (
 				<p>{updatedSkus.size} products updated from {uploadedFileName}</p>
-			  )}	  			
+			  )}
 	
 			  <h2>Step 3: Export merged CSV</h2>
+			  
+			  <p>{totalRows.length} total products updated</p>	
+			  
 			  <button onClick={exportCSV}>Export Full CSV</button>
 		  </div>
 		  
